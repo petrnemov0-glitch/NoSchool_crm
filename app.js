@@ -395,6 +395,7 @@
   function render() {
     const app = document.getElementById("app");
     if (CONFIG_MISSING) { app.innerHTML = renderSetupNeeded(); return; }
+    if (state.authMode === "reset") { app.innerHTML = renderResetScreen(); return; }
     if (!state.session) { app.innerHTML = renderAuthScreen(); return; }
     app.innerHTML = `${renderTopbar()}<div class="view">${renderView()}</div>${renderBottomNav()}`;
   }
@@ -429,6 +430,7 @@
           <button class="btn btn-ghost" style="width:100%;margin-top:6px" onclick="authToggleMode()">
             ${mode === "signin" ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
           </button>
+          ${mode === "signin" ? `<button class="btn btn-ghost" style="width:100%" onclick="authForgotPassword()">Забыли пароль?</button>` : ""}
         </div>
       </div>`;
   }
@@ -475,6 +477,41 @@
     render();
   };
 
+  window.authForgotPassword = async function () {
+    const email = document.getElementById("auth-email").value.trim();
+    if (!email) { authSetError("Сначала введите email в поле выше"); return; }
+    const { error } = await sbClient.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.href.split("#")[0].split("?")[0],
+    });
+    if (error) { authSetError(error.message); return; }
+    authSetError("Письмо со ссылкой для сброса пароля отправлено на " + email, true);
+  };
+
+  function renderResetScreen() {
+    return `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+        <div class="card" style="width:100%;max-width:360px">
+          <div style="text-align:center;margin-bottom:18px">
+            <div style="font-size:28px;font-weight:700;font-family:var(--font-display)">NoSchool</div>
+            <div class="muted small">Придумайте новый пароль</div>
+          </div>
+          <div class="field"><label>Новый пароль</label><input type="password" id="new-password" placeholder="Минимум 6 символов" autocomplete="new-password" /></div>
+          <div id="auth-error" class="small" style="min-height:18px;margin-bottom:6px;color:var(--danger)"></div>
+          <button class="btn btn-primary" onclick="authSetNewPassword()">Сохранить пароль</button>
+        </div>
+      </div>`;
+  }
+
+  window.authSetNewPassword = async function () {
+    const pw = document.getElementById("new-password").value;
+    if (pw.length < 6) { authSetError("Минимум 6 символов"); return; }
+    const { error } = await sbClient.auth.updateUser({ password: pw });
+    if (error) { authSetError(error.message); return; }
+    state.authMode = "signin";
+    showToast("Пароль обновлён, входите с новым паролем");
+    await dbFetchAll();
+    render();
+  };
   window.authSignOut = async function () {
     await sbClient.auth.signOut();
     state.session = null;
@@ -1287,8 +1324,9 @@
     ensureScheduleInit();
     if (CONFIG_MISSING) { render(); return; }
 
-    sbClient.auth.onAuthStateChange(async (_event, session) => {
+    sbClient.auth.onAuthStateChange(async (event, session) => {
       state.session = session;
+      if (event === "PASSWORD_RECOVERY") { state.authMode = "reset"; render(); return; }
       if (session) await dbFetchAll();
       else { state.students = []; state.lessons = []; state.expenses = []; }
       render();
