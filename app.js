@@ -17,6 +17,7 @@
     window.SUPABASE_CONFIG.url,
     window.SUPABASE_CONFIG.anonKey
   );
+  window.sbClient = sbClient; // для отладки через консоль браузера
 
   /* ---------------------------------------------------------
      ROW <-> APP OBJECT MAPPING
@@ -139,6 +140,7 @@
     studentsFilter: { query: "", status: "all" },
     conduct: null, // transient multi-step flow
   };
+  window.appState = state; // для отладки через консоль браузера
 
   /* ---------------------------------------------------------
      DATE HELPERS (local time, no timezone surprises)
@@ -1285,14 +1287,12 @@
     ensureScheduleInit();
     if (CONFIG_MISSING) { render(); return; }
 
-    sbClient.auth.onAuthStateChange((_event, session) => {
+    sbClient.auth.onAuthStateChange(async (_event, session) => {
       state.session = session;
+      if (session) await dbFetchAll();
+      else { state.students = []; state.lessons = []; state.expenses = []; }
+      render();
     });
-
-    const { data: { session } } = await sbClient.auth.getSession();
-    state.session = session;
-    if (session) await dbFetchAll();
-    render();
   }
   init();
 })();
