@@ -7,50 +7,130 @@
   "use strict";
 
   /* ---------------------------------------------------------
-     STORAGE
+     SUPABASE CLIENT
   --------------------------------------------------------- */
-  const STORAGE_KEYS = {
-    students: "noschool.students",
-    lessons: "noschool.lessons",
-    expenses: "noschool.expenses",
-  };
+  const CONFIG_MISSING = !window.SUPABASE_CONFIG ||
+    !window.SUPABASE_CONFIG.url || !window.SUPABASE_CONFIG.anonKey ||
+    window.SUPABASE_CONFIG.url.includes("ВАШ") || window.SUPABASE_CONFIG.anonKey.includes("ВАШ");
 
-  function loadArray(key) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.error("Ошибка чтения хранилища", key, e);
-      return [];
+  const sbClient = CONFIG_MISSING ? null : window.supabase.createClient(
+    window.SUPABASE_CONFIG.url,
+    window.SUPABASE_CONFIG.anonKey
+  );
+
+  /* ---------------------------------------------------------
+     ROW <-> APP OBJECT MAPPING
+     (БД хранит snake_case, приложение работает с camelCase —
+     остальной код экрана ничего не знает про эту разницу)
+  --------------------------------------------------------- */
+  function studentFromRow(r) {
+    return {
+      id: r.id, name: r.name, grade: r.grade, price: r.price, duration: r.duration,
+      phone: r.phone, telegram: r.telegram, comment: r.comment, status: r.status,
+      createdAt: r.created_at,
+    };
+  }
+  function studentToRow(s) {
+    return {
+      name: s.name, grade: s.grade, price: s.price, duration: s.duration,
+      phone: s.phone, telegram: s.telegram, comment: s.comment, status: s.status,
+    };
+  }
+  function lessonFromRow(r) {
+    return {
+      id: r.id, studentId: r.student_id, date: r.date,
+      time: r.time ? r.time.slice(0, 5) : r.time,
+      status: r.status, paid: r.paid, homework: r.homework, hwDone: r.hw_done,
+      comment: r.comment, price: r.price, createdAt: r.created_at,
+    };
+  }
+  function lessonToRow(l) {
+    return {
+      student_id: l.studentId, date: l.date, time: l.time, status: l.status,
+      paid: !!l.paid, homework: l.homework || "", hw_done: !!l.hwDone,
+      comment: l.comment || "", price: l.price,
+    };
+  }
+  function expenseFromRow(r) {
+    return { id: r.id, title: r.title, amount: r.amount, date: r.date };
+  }
+  function expenseToRow(e) {
+    return { title: e.title, amount: e.amount, date: e.date };
+  }
+
+  /* ---------------------------------------------------------
+     CRUD HELPERS
+     Каждая функция возвращает готовый объект приложения (или null при ошибке)
+     и сама показывает toast с ошибкой — вызывающему коду достаточно
+     проверить результат на null.
+  --------------------------------------------------------- */
+  async function dbFetchAll() {
+    const [studentsRes, lessonsRes, expensesRes] = await Promise.all([
+      sbClient.from("students").select("*").order("name"),
+      sbClient.from("lessons").select("*"),
+      sbClient.from("expenses").select("*"),
+    ]);
+    if (studentsRes.error || lessonsRes.error || expensesRes.error) {
+      console.error(studentsRes.error || lessonsRes.error || expensesRes.error);
+      showToast("Не удалось загрузить данные");
     }
+    state.students = (studentsRes.data || []).map(studentFromRow);
+    state.lessons = (lessonsRes.data || []).map(lessonFromRow);
+    state.expenses = (expensesRes.data || []).map(expenseFromRow);
   }
 
-  function saveArray(key, arr) {
-    try {
-      localStorage.setItem(key, JSON.stringify(arr));
-    } catch (e) {
-      console.error("Ошибка записи хранилища", key, e);
-      showToast("Не удалось сохранить данные");
-    }
+  async function dbInsertStudent(data) {
+    const { data: row, error } = await sbClient.from("students").insert(studentToRow(data)).select().single();
+    if (error) { console.error(error); showToast("Не удалось сохранить ученика"); return null; }
+    return studentFromRow(row);
+  }
+  async function dbUpdateStudent(id, data) {
+    const { error } = await sbClient.from("students").update(studentToRow(data)).eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось сохранить изменения"); return false; }
+    return true;
+  }
+  async function dbDeleteStudent(id) {
+    const { error } = await sbClient.from("students").delete().eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось удалить ученика"); return false; }
+    return true;
   }
 
-  function persist() {
-    saveArray(STORAGE_KEYS.students, state.students);
-    saveArray(STORAGE_KEYS.lessons, state.lessons);
-    saveArray(STORAGE_KEYS.expenses, state.expenses);
+  async function dbInsertLesson(data) {
+    const { data: row, error } = await sbClient.from("lessons").insert(lessonToRow(data)).select().single();
+    if (error) { console.error(error); showToast("Не удалось сохранить занятие"); return null; }
+    return lessonFromRow(row);
+  }
+  async function dbUpdateLesson(id, data) {
+    const { error } = await sbClient.from("lessons").update(lessonToRow(data)).eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось сохранить занятие"); return false; }
+    return true;
+  }
+  async function dbDeleteLesson(id) {
+    const { error } = await sbClient.from("lessons").delete().eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось удалить занятие"); return false; }
+    return true;
   }
 
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  async function dbInsertExpense(data) {
+    const { data: row, error } = await sbClient.from("expenses").insert(expenseToRow(data)).select().single();
+    if (error) { console.error(error); showToast("Не удалось сохранить расход"); return null; }
+    return expenseFromRow(row);
+  }
+  async function dbDeleteExpense(id) {
+    const { error } = await sbClient.from("expenses").delete().eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось удалить расход"); return false; }
+    return true;
   }
 
   /* ---------------------------------------------------------
      STATE
   --------------------------------------------------------- */
   const state = {
-    students: loadArray(STORAGE_KEYS.students),
-    lessons: loadArray(STORAGE_KEYS.lessons),
-    expenses: loadArray(STORAGE_KEYS.expenses),
+    session: null,
+    authMode: "signin",
+    students: [],
+    lessons: [],
+    expenses: [],
     view: "home",
     schedule: { mode: "week", weekStart: null, selectedDate: null },
     studentDetail: { id: null, tab: "history" },
@@ -312,8 +392,93 @@
   --------------------------------------------------------- */
   function render() {
     const app = document.getElementById("app");
+    if (CONFIG_MISSING) { app.innerHTML = renderSetupNeeded(); return; }
+    if (!state.session) { app.innerHTML = renderAuthScreen(); return; }
     app.innerHTML = `${renderTopbar()}<div class="view">${renderView()}</div>${renderBottomNav()}`;
   }
+
+  function renderSetupNeeded() {
+    return `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+        <div class="card" style="max-width:420px">
+          <div class="card-title">Нужна настройка</div>
+          <div style="font-weight:700;font-size:18px;margin-bottom:8px">Supabase ещё не подключён</div>
+          <div class="small muted">Откройте файл <b>config.js</b> в проекте и вставьте туда
+          URL и anon key вашего проекта Supabase (Project Settings → API), затем обновите страницу.</div>
+        </div>
+      </div>`;
+  }
+
+  function renderAuthScreen() {
+    const mode = state.authMode;
+    return `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+        <div class="card" style="width:100%;max-width:360px">
+          <div style="text-align:center;margin-bottom:18px">
+            <div style="font-size:28px;font-weight:700;font-family:var(--font-display)">NoSchool</div>
+            <div class="muted small">${mode === "signin" ? "Вход в CRM" : "Регистрация репетитора"}</div>
+          </div>
+          <div class="field"><label>Email</label><input type="text" id="auth-email" placeholder="you@example.com" autocomplete="username" /></div>
+          <div class="field"><label>Пароль</label><input type="password" id="auth-password" placeholder="Минимум 6 символов" autocomplete="current-password" /></div>
+          <div id="auth-error" class="small" style="min-height:18px;margin-bottom:6px;color:var(--danger)"></div>
+          <button class="btn btn-primary" id="auth-submit" onclick="${mode === "signin" ? "authSignIn()" : "authSignUp()"}">
+            ${mode === "signin" ? "Войти" : "Зарегистрироваться"}
+          </button>
+          <button class="btn btn-ghost" style="width:100%;margin-top:6px" onclick="authToggleMode()">
+            ${mode === "signin" ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  window.authToggleMode = function () {
+    state.authMode = state.authMode === "signin" ? "signup" : "signin";
+    render();
+  };
+
+  function authSetError(msg, ok) {
+    const el = document.getElementById("auth-error");
+    if (el) { el.style.color = ok ? "var(--success)" : "var(--danger)"; el.textContent = msg; }
+  }
+
+  window.authSignIn = async function () {
+    const email = document.getElementById("auth-email").value.trim();
+    const password = document.getElementById("auth-password").value;
+    if (!email || !password) { authSetError("Введите email и пароль"); return; }
+    const btn = document.getElementById("auth-submit"); btn.disabled = true;
+    const { data, error } = await sbClient.auth.signInWithPassword({ email, password });
+    if (error) { authSetError("Неверный email или пароль"); btn.disabled = false; return; }
+    state.session = data.session;
+    await dbFetchAll();
+    ensureScheduleInit();
+    render();
+  };
+
+  window.authSignUp = async function () {
+    const email = document.getElementById("auth-email").value.trim();
+    const password = document.getElementById("auth-password").value;
+    if (!email || password.length < 6) { authSetError("Email обязателен, пароль — минимум 6 символов"); return; }
+    const btn = document.getElementById("auth-submit"); btn.disabled = true;
+    const { data, error } = await sbClient.auth.signUp({ email, password });
+    if (error) { authSetError(error.message); btn.disabled = false; return; }
+    if (!data.session) {
+      state.authMode = "signin";
+      render();
+      authSetError("Проверьте почту и подтвердите регистрацию, затем войдите", true);
+      return;
+    }
+    state.session = data.session;
+    await dbFetchAll();
+    ensureScheduleInit();
+    render();
+  };
+
+  window.authSignOut = async function () {
+    await sbClient.auth.signOut();
+    state.session = null;
+    state.students = []; state.lessons = []; state.expenses = [];
+    render();
+  };
 
   const TOPBAR_TITLES = {
     home: null,
@@ -425,6 +590,8 @@
         ${todays.length === 0 ? `<div class="empty"><div class="ico">📭</div><div class="t">Сегодня занятий нет</div><div class="s">Добавьте занятие в расписании</div></div>` :
         todays.map((l) => lessonRowHTML(l)).join("")}
       </div>
+
+      <button class="link-danger" onclick="authSignOut()">Выйти из аккаунта</button>
     `;
   }
 
@@ -652,15 +819,20 @@
   }
 
   window.studentDetailTab = function (tab) { state.studentDetail.tab = tab; render(); };
-  window.toggleHomeworkDone = function (lessonId) {
+  window.toggleHomeworkDone = async function (lessonId) {
     const l = state.lessons.find((x) => x.id === lessonId);
-    if (l) { l.hwDone = !l.hwDone; persist(); render(); }
+    if (!l) return;
+    const ok = await dbUpdateLesson(lessonId, { ...l, hwDone: !l.hwDone });
+    if (!ok) return;
+    l.hwDone = !l.hwDone;
+    render();
   };
-  window.deleteStudent = function (id) {
+  window.deleteStudent = async function (id) {
     if (!confirm("Удалить ученика и всю историю его занятий? Действие необратимо.")) return;
+    const ok = await dbDeleteStudent(id);
+    if (!ok) return;
     state.students = state.students.filter((s) => s.id !== id);
-    state.lessons = state.lessons.filter((l) => l.studentId !== id);
-    persist();
+    state.lessons = state.lessons.filter((l) => l.studentId !== id); // каскад на стороне БД, здесь просто чистим кэш
     showToast("Ученик удалён");
     goTo("students");
   };
@@ -700,7 +872,7 @@
     setTimeout(() => document.getElementById("f-name")?.focus(), 50);
   }
 
-  window.saveStudent = function (id) {
+  window.saveStudent = async function (id) {
     const name = document.getElementById("f-name").value.trim();
     if (!name) { showToast("Введите имя ученика"); return; }
     const data = {
@@ -714,14 +886,16 @@
       comment: document.getElementById("f-comment").value.trim(),
     };
     if (id) {
-      const st = getStudent(id);
-      Object.assign(st, data);
+      const ok = await dbUpdateStudent(id, data);
+      if (!ok) return;
+      Object.assign(getStudent(id), data);
       showToast("Изменения сохранены");
     } else {
-      state.students.push({ id: uid(), createdAt: Date.now(), ...data });
+      const created = await dbInsertStudent(data);
+      if (!created) return;
+      state.students.push(created);
       showToast("Ученик добавлен");
     }
-    persist();
     closeModal();
     render();
   };
@@ -796,20 +970,22 @@
     `);
     setTimeout(() => document.getElementById("e-title")?.focus(), 50);
   };
-  window.saveExpense = function () {
+  window.saveExpense = async function () {
     const title = document.getElementById("e-title").value.trim();
     const amount = Number(document.getElementById("e-amount").value) || 0;
     const date = document.getElementById("e-date").value || todayISO();
     if (!title || amount <= 0) { showToast("Заполните название и сумму"); return; }
-    state.expenses.push({ id: uid(), title, amount, date });
-    persist();
+    const created = await dbInsertExpense({ title, amount, date });
+    if (!created) return;
+    state.expenses.push(created);
     closeModal();
     showToast("Расход добавлен");
     render();
   };
-  window.deleteExpense = function (id) {
+  window.deleteExpense = async function (id) {
+    const ok = await dbDeleteExpense(id);
+    if (!ok) return;
     state.expenses = state.expenses.filter((e) => e.id !== id);
-    persist();
     render();
   };
 
@@ -906,7 +1082,7 @@
     `);
   }
 
-  window.saveLessonForm = function (id) {
+  window.saveLessonForm = async function (id) {
     const studentId = document.getElementById("l-student").value;
     const date = document.getElementById("l-date").value;
     const time = document.getElementById("l-time").value;
@@ -919,28 +1095,32 @@
       const l = state.lessons.find((x) => x.id === id);
       const statusEl = document.getElementById("l-status");
       const paidEl = document.getElementById("l-paid-switch");
-      Object.assign(l, {
-        studentId, date, time, homework, comment,
+      const merged = {
+        ...l, studentId, date, time, homework, comment,
         status: statusEl ? statusEl.value : l.status,
         paid: paidEl ? paidEl.classList.contains("on") : l.paid,
-      });
+      };
+      const ok = await dbUpdateLesson(id, merged);
+      if (!ok) return;
+      Object.assign(l, merged);
       showToast("Занятие обновлено");
     } else {
-      state.lessons.push({
-        id: uid(), studentId, date, time, homework, comment,
-        status: "planned", paid: false, hwDone: false,
-        price: student.price, createdAt: Date.now(),
+      const created = await dbInsertLesson({
+        studentId, date, time, homework, comment,
+        status: "planned", paid: false, hwDone: false, price: student.price,
       });
+      if (!created) return;
+      state.lessons.push(created);
       showToast("Занятие добавлено в расписание");
     }
-    persist();
     closeModal();
     render();
   };
-  window.deleteLesson = function (id) {
+  window.deleteLesson = async function (id) {
     if (!confirm("Удалить это занятие?")) return;
+    const ok = await dbDeleteLesson(id);
+    if (!ok) return;
     state.lessons = state.lessons.filter((l) => l.id !== id);
-    persist();
     closeModal();
     showToast("Занятие удалено");
     render();
@@ -1059,7 +1239,7 @@
     state.conduct.step = 2;
     renderConductModal();
   };
-  window.conductSave = function () {
+  window.conductSave = async function () {
     const c = state.conduct;
     const student = getStudent(c.studentId);
     const comment = document.getElementById("c-comment")?.value.trim() || "";
@@ -1075,19 +1255,23 @@
 
     if (c.lessonId) {
       const l = state.lessons.find((x) => x.id === c.lessonId);
-      Object.assign(l, payload);
-      if (c.status !== "moved") { l.date = c.date; l.time = c.time; }
+      const merged = { ...l, ...payload };
+      if (c.status !== "moved") { merged.date = c.date; merged.time = c.time; }
+      const ok = await dbUpdateLesson(c.lessonId, merged);
+      if (!ok) return;
+      Object.assign(l, merged);
     } else {
-      state.lessons.push({
-        id: uid(), studentId: c.studentId,
+      const newData = {
+        studentId: c.studentId,
         date: c.status === "moved" ? c.date : c.date,
         time: c.status === "moved" ? c.time : c.time,
         price: student.price, hwDone: false, homework: "", paid: false, comment: "",
-        createdAt: Date.now(),
         ...payload,
-      });
+      };
+      const created = await dbInsertLesson(newData);
+      if (!created) return;
+      state.lessons.push(created);
     }
-    persist();
     closeModal();
     state.conduct = null;
     showToast("Занятие сохранено");
@@ -1097,6 +1281,18 @@
   /* ---------------------------------------------------------
      INIT
   --------------------------------------------------------- */
-  ensureScheduleInit();
-  render();
+  async function init() {
+    ensureScheduleInit();
+    if (CONFIG_MISSING) { render(); return; }
+
+    sbClient.auth.onAuthStateChange((_event, session) => {
+      state.session = session;
+    });
+
+    const { data: { session } } = await sbClient.auth.getSession();
+    state.session = session;
+    if (session) await dbFetchAll();
+    render();
+  }
+  init();
 })();

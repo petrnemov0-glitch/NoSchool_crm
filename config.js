@@ -1,0 +1,12 @@
+// Вставьте сюда данные вашего проекта Supabase.
+// Найти их можно в Supabase → ваш проект → Project Settings → API.
+//   Project URL          → url
+//   Project API keys →anon public → anonKey
+//
+// Этот ключ (anon key) безопасно публиковать на клиенте — доступ к данным
+// всё равно ограничен политиками Row Level Security на стороне базы данных.
+
+window.SUPABASE_CONFIG = {
+  url: "ВАШ_SUPABASE_URL",
+  anonKey: "ВАШ_SUPABASE_ANON_KEY",
+};
