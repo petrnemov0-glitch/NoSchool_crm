@@ -7,6 +7,6 @@
 // всё равно ограничен политиками Row Level Security на стороне базы данных.
 
 window.SUPABASE_CONFIG = {
-  url: "https://mdoniyickckhkwdwsuya.supabase.co/rest/v1/",
+  url: "https://mdoniyickckhkwdwsuya.supabase.co",
   anonKey: "sb_publishable_VUC_x5w5KjhugpUW3tjp5w_ODwh5GwG",
 };
