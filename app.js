@@ -65,12 +65,23 @@
      и сама показывает toast с ошибкой — вызывающему коду достаточно
      проверить результат на null.
   --------------------------------------------------------- */
+  // Счётчик запросов: если пока шёл один dbFetchAll() успел стартовать
+  // и завершиться более новый вызов, устаревший ответ должен быть отброшен,
+  // а не перезаписывать поверх уже более свежие данные. Без этой защиты
+  // два перекрывающихся вызова (например, при быстром logout → login,
+  // или при параллельных событиях авторизации) могут прийти в обратном
+  // порядке и откатить состояние экрана назад — именно это выглядело как
+  // «пропавший ученик» и «лишний дубль».
+  let fetchSeq = 0;
+
   async function dbFetchAll() {
+    const mySeq = ++fetchSeq;
     const [studentsRes, lessonsRes, expensesRes] = await Promise.all([
       sbClient.from("students").select("*").order("name"),
       sbClient.from("lessons").select("*"),
       sbClient.from("expenses").select("*"),
     ]);
+    if (mySeq !== fetchSeq) return; // пришёл устаревший ответ — игнорируем
     if (studentsRes.error || lessonsRes.error || expensesRes.error) {
       console.error(studentsRes.error || lessonsRes.error || expensesRes.error);
       showToast("Не удалось загрузить данные");
@@ -78,6 +89,18 @@
     state.students = (studentsRes.data || []).map(studentFromRow);
     state.lessons = (lessonsRes.data || []).map(lessonFromRow);
     state.expenses = (expensesRes.data || []).map(expenseFromRow);
+  }
+
+  // Защита от повторной отправки: если пользователь нажмёт «Сохранить»
+  // дважды подряд (двойной клик, медленная сеть), второй вызов с тем же
+  // ключом игнорируется, пока первый не завершится. Это устраняет
+  // дублирование записей (например, «три Максима вместо двух»).
+  const inFlight = new Set();
+  async function withGuard(key, fn) {
+    if (inFlight.has(key)) return;
+    inFlight.add(key);
+    try { return await fn(); }
+    finally { inFlight.delete(key); }
   }
 
   async function dbInsertStudent(data) {
@@ -623,7 +646,8 @@
         todays.map((l) => lessonRowHTML(l)).join("")}
       </div>
 
-      <button class="link-danger" onclick="authSignOut()">Выйти из аккаунта</button>
+      <div class="small muted" style="text-align:center;margin-top:16px">Вы вошли как ${escapeHTML(state.session?.user?.email || "")}</div>
+      <button class="link-danger" style="display:block;margin:0 auto" onclick="authSignOut()">Выйти из аккаунта</button>
     `;
   }
 
@@ -917,6 +941,7 @@
       telegram: document.getElementById("f-telegram").value.trim(),
       comment: document.getElementById("f-comment").value.trim(),
     };
+    await withGuard("saveStudent", async () => {
     if (id) {
       const ok = await dbUpdateStudent(id, data);
       if (!ok) return;
@@ -930,6 +955,7 @@
     }
     closeModal();
     render();
+    });
   };
 
   /* ---------------------------------------------------------
@@ -1007,12 +1033,14 @@
     const amount = Number(document.getElementById("e-amount").value) || 0;
     const date = document.getElementById("e-date").value || todayISO();
     if (!title || amount <= 0) { showToast("Заполните название и сумму"); return; }
-    const created = await dbInsertExpense({ title, amount, date });
-    if (!created) return;
-    state.expenses.push(created);
-    closeModal();
-    showToast("Расход добавлен");
-    render();
+    await withGuard("saveExpense", async () => {
+      const created = await dbInsertExpense({ title, amount, date });
+      if (!created) return;
+      state.expenses.push(created);
+      closeModal();
+      showToast("Расход добавлен");
+      render();
+    });
   };
   window.deleteExpense = async function (id) {
     const ok = await dbDeleteExpense(id);
@@ -1123,6 +1151,7 @@
     const student = getStudent(studentId);
     if (!student) { showToast("Выберите ученика"); return; }
 
+    await withGuard("saveLesson", async () => {
     if (id) {
       const l = state.lessons.find((x) => x.id === id);
       const statusEl = document.getElementById("l-status");
@@ -1147,6 +1176,7 @@
     }
     closeModal();
     render();
+    });
   };
   window.deleteLesson = async function (id) {
     if (!confirm("Удалить это занятие?")) return;
@@ -1211,6 +1241,10 @@
       let extra = "";
       if (c.status === "done") {
         extra = `
+          <div class="field-row">
+            <div class="field"><label>Дата проведения</label><input type="date" id="c-done-date" value="${c.date}" /></div>
+            <div class="field"><label>Время</label><input type="time" id="c-done-time" value="${c.time}" /></div>
+          </div>
           <div class="toggle-row">
             <span class="label">Оплачено</span>
             <button class="switch ${c.paid ? "on" : ""}" id="c-paid-switch" onclick="this.classList.toggle('on')"></button>
@@ -1280,23 +1314,25 @@
     if (c.status === "done") {
       payload.paid = document.getElementById("c-paid-switch")?.classList.contains("on") || false;
       payload.homework = document.getElementById("c-homework")?.value.trim() || "";
+      payload.date = document.getElementById("c-done-date").value;
+      payload.time = document.getElementById("c-done-time").value;
     } else if (c.status === "moved") {
       payload.date = document.getElementById("c-move-date").value;
       payload.time = document.getElementById("c-move-time").value;
     }
 
+    await withGuard("conductSave", async () => {
     if (c.lessonId) {
       const l = state.lessons.find((x) => x.id === c.lessonId);
       const merged = { ...l, ...payload };
-      if (c.status !== "moved") { merged.date = c.date; merged.time = c.time; }
+      if (c.status === "cancelled") { merged.date = c.date; merged.time = c.time; }
       const ok = await dbUpdateLesson(c.lessonId, merged);
       if (!ok) return;
       Object.assign(l, merged);
     } else {
       const newData = {
         studentId: c.studentId,
-        date: c.status === "moved" ? c.date : c.date,
-        time: c.status === "moved" ? c.time : c.time,
+        date: c.date, time: c.time,
         price: student.price, hwDone: false, homework: "", paid: false, comment: "",
         ...payload,
       };
@@ -1308,6 +1344,7 @@
     state.conduct = null;
     showToast("Занятие сохранено");
     render();
+    });
   };
 
   /* ---------------------------------------------------------
