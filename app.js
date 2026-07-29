@@ -450,12 +450,9 @@
     const password = document.getElementById("auth-password").value;
     if (!email || !password) { authSetError("Введите email и пароль"); return; }
     const btn = document.getElementById("auth-submit"); btn.disabled = true;
-    const { data, error } = await sbClient.auth.signInWithPassword({ email, password });
+    const { error } = await sbClient.auth.signInWithPassword({ email, password });
     if (error) { authSetError("Неверный email или пароль"); btn.disabled = false; return; }
-    state.session = data.session;
-    await dbFetchAll();
-    ensureScheduleInit();
-    render();
+    // Дальше state.session/данные подтянутся через onAuthStateChange
   };
 
   window.authSignUp = async function () {
@@ -471,10 +468,7 @@
       authSetError("Проверьте почту и подтвердите регистрацию, затем войдите", true);
       return;
     }
-    state.session = data.session;
-    await dbFetchAll();
-    ensureScheduleInit();
-    render();
+    // Дальше state.session/данные подтянутся через onAuthStateChange
   };
 
   window.authForgotPassword = async function () {
@@ -508,8 +502,7 @@
     const { error } = await sbClient.auth.updateUser({ password: pw });
     if (error) { authSetError(error.message); return; }
     state.authMode = "signin";
-    showToast("Пароль обновлён, входите с новым паролем");
-    await dbFetchAll();
+    showToast("Пароль обновлён");
     render();
   };
   window.authSignOut = async function () {
@@ -1324,12 +1317,17 @@
     ensureScheduleInit();
     if (CONFIG_MISSING) { render(); return; }
 
-    sbClient.auth.onAuthStateChange(async (event, session) => {
+    sbClient.auth.onAuthStateChange((event, session) => {
       state.session = session;
       if (event === "PASSWORD_RECOVERY") { state.authMode = "reset"; render(); return; }
-      if (session) await dbFetchAll();
-      else { state.students = []; state.lessons = []; state.expenses = []; }
-      render();
+      // Важно: НЕ делать supabase-запросы напрямую внутри этого колбэка —
+      // это может подвесить внутреннюю блокировку авторизации в supabase-js.
+      // Поэтому выносим дальнейшую загрузку данных за пределы колбэка.
+      setTimeout(async () => {
+        if (session) await dbFetchAll();
+        else { state.students = []; state.lessons = []; state.expenses = []; }
+        render();
+      }, 0);
     });
   }
   init();
